@@ -1,6 +1,13 @@
 idf_component_register(
-    SRCS "sd_card.c" "display.c" "main.c"
-    INCLUDE_DIRS "."
+    SRCS 
+        "sd_card.c" 
+        "display.c"
+        "led.c"
+        "speaker.c" 
+        "audio_decoder.c"
+        "main.c" 
+    INCLUDE_DIRS 
+        "."
     REQUIRES 
         fatfs 
         sdmmc 
@@ -9,6 +16,7 @@ idf_component_register(
         esp_lcd
         esp_driver_gpio
         esp_driver_uart
+        esp_audio_codec
     PRIV_REQUIRES 
         esp_lcd 
         driver

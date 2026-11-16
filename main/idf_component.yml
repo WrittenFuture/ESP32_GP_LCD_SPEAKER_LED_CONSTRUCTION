@@ -16,3 +16,4 @@ dependencies:
   #   public: true
   espressif/led_strip: '*'
   esp-idf-lib/color: '*'
+  espressif/esp_audio_codec: ^2.6.0
