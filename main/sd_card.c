@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "driver/gpio.h"
+#include "util.h"
 
 #define TAG "SD_CARD"
 
@@ -109,7 +110,7 @@ void readfile(const char *file_path)
 
 FILE *readfile_open(const char *file_path)
 {
-    FILE *file = fopen(file_path, "r");
+    FILE *file = fopen(file_path, "rb");
     if (file == NULL) {
         ESP_LOGE(TAG, "Failed to open file for reading: %s", file_path);
         return NULL;
@@ -118,8 +119,57 @@ FILE *readfile_open(const char *file_path)
     return file;
 }
 
-esp_err_t get_data(int index, int byte_count, const char *file_path, uint8_t *buffer)
+// TODO: add checks
+esp_err_t copy_data(buffer_u8_t *buffer, size_t buffer_offset, size_t file_start, size_t byte_count, const char *file_path)
 {
+    if (buffer->data == NULL)
+    {
+        ESP_LOGE(TAG, "buffer is null");
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (buffer->size < byte_count)
+    {
+        ESP_LOGE(TAG, "Buffer is to small");
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    // get file from path
+    FILE *file = readfile_open(file_path);
+    if (!file) {
+        ESP_LOGE(TAG, "Failed to open file for reading while getting data: %s", file_path);
+        return ESP_FAIL;
+    }
+
+    // set cursor to where i want file to start reading 
+    if (fseek(file, file_start, SEEK_SET) != 0)
+    {
+        fclose(file);
+        ESP_LOGE(TAG, "Failed to seek to offset %ld in file: %s", file_start, file_path);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Reading %d bytes from file: %s at offset %ld", byte_count, file_path, file_start);
+
+    // copy bytes into buffer from file_start 
+    fread(buffer->data + buffer_offset, 1, byte_count, file);
+    fclose(file);
+
+    return ESP_OK;
+}
+
+esp_err_t get_data(int index, int byte_count, const char *file_path, buffer_u8_t *buffer)
+{
+
+    if (buffer == NULL || buffer->data == NULL) {
+        ESP_LOGE(TAG, "audio buffer is null");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (byte_count > buffer->size)
+    {
+        ESP_LOGE(TAG, "buffer is too small");
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     // get file from path
     FILE *file = readfile_open(file_path);
@@ -140,30 +190,15 @@ esp_err_t get_data(int index, int byte_count, const char *file_path, uint8_t *bu
 
     ESP_LOGI(TAG, "Reading %d bytes from file: %s at offset %ld", byte_count, file_path, offset);
 
-    size_t bytes_read = fread(buffer, 1, byte_count, file);
+    size_t bytes_read = fread(buffer->data, 1, byte_count, file);
+    if (bytes_read == 0) {
+        fclose(file);
+        ESP_LOGE(TAG, "Failed to read %d bytes from %s", byte_count, file_path);
+        return ESP_FAIL;
+    }
 
     fclose(file);
 
     return ESP_OK;
 }
 
-
-uint8_t *get_buffer(int index, int buffer_size, const char *file_path)
-{
-    // callers job to free the buffer after use
-    uint8_t *buffer = malloc(buffer_size * sizeof(*buffer));
-    
-    esp_err_t err = get_data(index, buffer_size, file_path, buffer);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read data from file: %s", file_path);
-        free(buffer);
-        return NULL;
-    }
-
-    if (buffer == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for buffer");
-        return NULL;
-    }
-    
-    return buffer;
-}

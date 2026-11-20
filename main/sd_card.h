@@ -1,5 +1,7 @@
 #pragma once
 
+#include "util.h"
+
 #define SD_MISO GPIO_NUM_19
 #define SD_MOSI GPIO_NUM_23
 #define SD_CLK  GPIO_NUM_18
@@ -22,5 +24,5 @@
 esp_err_t sd_card_init(const char *mount_point);
 void readfile(const char *file_path);
 FILE *readfile_open(const char *file_path);
-uint8_t *get_buffer(int index, int buffer_size, const char *file_path);
-esp_err_t get_data(int index, int byte_count, const char *file_path, uint8_t *buffer);
+esp_err_t copy_data(buffer_u8_t *buffer, size_t buffer_offset, size_t file_start, size_t byte_count, const char *file_path);
+esp_err_t get_data(int index, int byte_count, const char *file_path, buffer_u8_t *buffer);

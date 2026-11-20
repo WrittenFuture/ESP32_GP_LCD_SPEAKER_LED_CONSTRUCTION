@@ -5,6 +5,7 @@ idf_component_register(
         "led.c"
         "speaker.c" 
         "audio_decoder.c"
+        "util.c"
         "main.c" 
     INCLUDE_DIRS 
         "."

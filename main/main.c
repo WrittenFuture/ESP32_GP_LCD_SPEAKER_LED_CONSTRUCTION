@@ -1,12 +1,16 @@
 #include <math.h>
 
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_err.h"
 #include "esp_log.h"
 
 #include "sd_card.h"
 #include "speaker.h"
+#include "util.h"
 
 #define AUD_BUFFER_SIZE 4096
+#define PCM_BUFFER_SIZE 8192
 
 static const char *TAG = "MAIN";
 
@@ -19,41 +23,57 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to initialize SD card: %s", esp_err_to_name(ret));
         return;
     }
-
     ESP_LOGI(TAG, "SD card initialized successfully");
-
-    //read a mp3 buffer
-    uint8_t *buffer = get_buffer(0, AUD_BUFFER_SIZE, MP3_FILE_PATH "59. Minuet of Forest.mp3");
-
-    ESP_LOGI(TAG, "Buffer size: %d", AUD_BUFFER_SIZE);
-
-    if (buffer == NULL) {
-        ESP_LOGE(TAG, "Failed to read mp3 file into buffer");
-        return;
-    }
-    ESP_LOGI(TAG, "Successfully read mp3 file into buffer as \n");
-
-    // print the bytes of the buffer in hex
-    for (int i = 0; i < log2(AUD_BUFFER_SIZE); i++)
-    {
-        printf("%02X ", buffer[i]);
-        if ((i + 1) % 16 == 0)
-        {
-            printf("\n");
-        }
-    }
-
-    printf("\n");
-
 
     //initialize the speaker
     speaker_config_t *speaker_config = speaker_init();
+    if (speaker_config == NULL) {
+        ESP_LOGE(TAG, "Failed to initialize speaker");
+        return;
+    }
 
-    // use the play_audio function to play the audio from the buffer
-    play_audio(buffer, AUD_BUFFER_SIZE, speaker_config);
+    // get an audio buffer
+    buffer_u8_t aud_buffer = get_buffer(AUD_BUFFER_SIZE);
+    if (aud_buffer.data == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate audio buffer");
+        return;
+    }
 
+    // get a pcm buffer
+    buffer_u8_t pcm_buffer = get_buffer(PCM_BUFFER_SIZE);
+    if (pcm_buffer.data == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate PCM buffer");
+        free(aud_buffer.data);
+        return;
+    }
 
-    
+    size_t unconsumed_size = 0;
+    size_t total_read = 0;
+    int counter = 0;
+
+    while(1)
+    {
+        // fill the buffer with raw data
+        ret = copy_data(&aud_buffer, unconsumed_size, total_read, AUD_BUFFER_SIZE - unconsumed_size, MP3_FILE_PATH "59. Minuet of Forest.mp3");
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to copy data");
+            continue;
+        }
+        total_read += AUD_BUFFER_SIZE - unconsumed_size;
+
+        ret = play_audio(&aud_buffer, &pcm_buffer, speaker_config, &unconsumed_size);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to play audio");
+            continue;
+        }
+
+        counter ++;
+
+        printf("\n");
+        ESP_LOGI(TAG, "buffer read #%d", counter);
+    }
+
+    free(aud_buffer.data);
+    free(pcm_buffer.data);
 }
-
 
