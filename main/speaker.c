@@ -18,24 +18,24 @@
 #include "audio_decoder.h"
 
 static const char *TAG = "SPEAKER";
+static const char *TAG_DECODER = "SPEAKER_DECODER";
+static const char *TAG_PLAYER = "SPEAKER_PLAYER";
 
 speaker_config_t *speaker_init(void)
 {
     ESP_LOGI(TAG, "Initializing speaker");
-    
+
     i2s_chan_handle_t tx_handle;
 
     // configure the I2S channel
     i2s_chan_config_t chan_cfg =
         I2S_CHANNEL_DEFAULT_CONFIG(
             SPK_I2S_NUM,
-            I2S_ROLE_MASTER
-        );
-    
+            I2S_ROLE_MASTER);
+
     // create the I2S channel and chceck for errors
     ESP_ERROR_CHECK(
-        i2s_new_channel(&chan_cfg, &tx_handle, NULL)
-    );
+        i2s_new_channel(&chan_cfg, &tx_handle, NULL));
 
     // configure the I2S standard mode
     i2s_std_config_t std_cfg = {
@@ -43,8 +43,7 @@ speaker_config_t *speaker_init(void)
 
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT,
-            I2S_SLOT_MODE_STEREO
-        ),
+            I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = SPK_I2S_BCLK,
@@ -55,14 +54,12 @@ speaker_config_t *speaker_init(void)
     };
 
     ESP_ERROR_CHECK(
-        i2s_channel_init_std_mode(tx_handle, &std_cfg)
-    );
+        i2s_channel_init_std_mode(tx_handle, &std_cfg));
 
     ESP_ERROR_CHECK(
-        i2s_channel_enable(tx_handle)
-    );
+        i2s_channel_enable(tx_handle));
 
-    //initialize decoder
+    // initialize decoder
     esp_audio_simple_dec_handle_t decoder = NULL;
 
     esp_err_t ret = mp3_decoder_init(&decoder);
@@ -92,151 +89,11 @@ speaker_config_t *speaker_init(void)
     return config;
 }
 
-/*
-frame_t *get_frame_old(
-    uint8_t *audio_buffer, 
-    uint8_t *unconsumed_bytes, 
-    size_t unconsumed_size, 
-    size_t buffer_size, 
-    esp_audio_simple_dec_handle_t decoder)
-{
-
-    // return value is freed by caller
-    frame_t *new_frame = malloc(sizeof(frame_t));
-    if (new_frame == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate frame");
-        return NULL;
-    }
-
-    //handel leftover data from last frame if present
-
-    //allocate data for both pointers size
-    size_t raw_data_size = buffer_size + unconsumed_size;
-    uint8_t *raw_data = malloc(raw_data_size);
-
-    if (raw_data == NULL)
-    {
-        ESP_LOGE(TAG, "failed to allowcate raw data buffer");
-        free(new_frame);
-        return NULL;
-    }
-
-    if (unconsumed_bytes != NULL)
-    {
-        //copy data from both buffers into raw data to pass to the function
-        memcpy(raw_data, unconsumed_bytes, unconsumed_size);
-        memcpy(raw_data + unconsumed_size, audio_buffer, buffer_size);
-    }
-    else
-    {
-        //if unconsumed is null there is no leftover data to handle
-        raw_data_size = buffer_size;
-        memcpy(raw_data, audio_buffer, buffer_size);
-    }
-
-    // process raw audio
-    esp_audio_simple_dec_raw_t raw = {
-        .buffer = raw_data,
-        .len = raw_data_size,
-        .eos = false,
-    };
-
-    // Allocate a buffer for PCM data, size is arbitrary
-    size_t pcm_capacity = 8192;
-
-    uint8_t *pcm_buffer = malloc(pcm_capacity);
-    if (pcm_buffer == NULL)
-    {
-        ESP_LOGE(TAG, "Failed to allocate pcm_buffer");
-        ESP_LOGW(TAG, "needed %zu bytes in memory had %u with the largest block of %u bytes", 
-            pcm_capacity,
-            (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT), 
-            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-        free(new_frame);
-        return NULL;
-    }
-
-    esp_audio_simple_dec_out_t frame = {
-        .buffer = pcm_buffer,
-        .len = pcm_capacity,
-    };
-
-    esp_err_t ret = esp_audio_simple_dec_process(
-        decoder,
-        &raw,
-        &frame
-    );
-
-    if (ret != ESP_AUDIO_ERR_OK)
-    {
-        ESP_LOGE(TAG, "MP3 decoding failed");
-        free(pcm_buffer);
-        free(new_frame);
-        free(raw_data);
-        return NULL;
-    }
-
-    esp_audio_simple_dec_info_t audio_info = {0};
-
-    ret = esp_audio_simple_dec_get_info(decoder, &audio_info);
-
-    if (ret != ESP_AUDIO_ERR_OK) {
-        ESP_LOGE(TAG, "Failed to get audio information");
-        free(pcm_buffer);
-        free(raw_data);
-        free(new_frame);
-        return NULL;
-    }
-
-    ESP_LOGI(TAG, "Sample rate: %lu", (unsigned long)audio_info.sample_rate);
-    ESP_LOGI(TAG, "Bits per sample: %u", audio_info.bits_per_sample);
-    ESP_LOGI(TAG, "Channels: %u", audio_info.channel);
-    ESP_LOGI(TAG, "Only consumed %d bytes out of %d",raw.consumed , raw_data_size);
-
-    // calculate size of unconsumed_bytes
-    size_t new_unconsumed_size = raw_data_size - raw.consumed;
-
-    // copy the unconsumed bytes into the unconsumed_bytes buffer for the next frame
-    ESP_LOGI(TAG, "Allocating %zu bytes to unconsumed buffer", new_unconsumed_size);
-
-    //reallocate unconsumed to the correct size for return value
-    uint8_t *new_unconsumed_bytes = malloc(new_unconsumed_size);
-
-    // copy unconsumed bytes into unconsumed buffer
-    if (new_unconsumed_bytes != NULL)
-    {
-        memcpy(
-            new_unconsumed_bytes,
-            raw_data + raw.consumed,
-            new_unconsumed_size
-        );
-    }
-    else
-    {
-        ESP_LOGE(TAG, "could not copy into unconsumed bytes buffer");
-        free(pcm_buffer);
-        free(raw_data);
-        free(new_frame);
-        return NULL;
-    }
-
-    new_frame->pcm_buffer = pcm_buffer;
-    new_frame->pcm_buffer_size = frame.decoded_size;
-    new_frame->unconsumed_bytes = new_unconsumed_bytes; 
-    new_frame->unconsumed_bytes_size = new_unconsumed_size;
-
-    //raw data isnt needed anymore
-    free(raw_data);
-
-    return new_frame;
-
-}
-*/
-esp_err_t decode(buffer_u8_t *pcm_buffer, 
-    buffer_u8_t *raw_buffer, 
-    esp_audio_simple_dec_handle_t decoder,
-    size_t *unconsumed_size,
-    size_t *decoded_size)
+esp_err_t decode(buffer_u8_t *pcm_buffer,
+                 buffer_u8_t *raw_buffer,
+                 esp_audio_simple_dec_handle_t decoder,
+                 size_t *unconsumed_size,
+                 size_t *decoded_size)
 {
 
     if (pcm_buffer == NULL || raw_buffer == NULL ||
@@ -261,8 +118,7 @@ esp_err_t decode(buffer_u8_t *pcm_buffer,
     esp_err_t ret = esp_audio_simple_dec_process(
         decoder,
         &raw,
-        &frame
-    );
+        &frame);
 
     if (ret != ESP_AUDIO_ERR_OK)
     {
@@ -274,7 +130,8 @@ esp_err_t decode(buffer_u8_t *pcm_buffer,
 
     ret = esp_audio_simple_dec_get_info(decoder, &audio_info);
 
-    if (ret != ESP_AUDIO_ERR_OK) {
+    if (ret != ESP_AUDIO_ERR_OK)
+    {
         ESP_LOGE(TAG, "Failed to get audio information");
         return ESP_FAIL;
     }
@@ -282,29 +139,26 @@ esp_err_t decode(buffer_u8_t *pcm_buffer,
     ESP_LOGI(TAG, "Sample rate: %lu", (unsigned long)audio_info.sample_rate);
     ESP_LOGI(TAG, "Bits per sample: %u", audio_info.bits_per_sample);
     ESP_LOGI(TAG, "Channels: %u", audio_info.channel);
-    ESP_LOGI(TAG, "Only consumed %d bytes",raw.consumed);
+    ESP_LOGI(TAG, "Only consumed %d bytes", raw.consumed);
 
-    //move uncconsumed bytes to beginning of buffer
-    memcpy(
+    // move uncconsumed bytes to beginning of buffer
+    memmove(
         raw_buffer->data,
         raw_buffer->data + raw.consumed,
-        raw_buffer->size - raw.consumed
-    );
-    
-    //set unconumed size
+        raw_buffer->size - raw.consumed);
+
+    // set unconumed size
     *unconsumed_size = raw_buffer->size - raw.consumed;
     *decoded_size = frame.decoded_size;
 
     return ESP_OK;
-
 }
 
 esp_err_t play_audio(
-    buffer_u8_t *aud_buffer, 
+    buffer_u8_t *aud_buffer,
     buffer_u8_t *pcm_buffer,
-    speaker_config_t *speaker_config, 
-    size_t *unconsumed_size
-)
+    speaker_config_t *speaker_config,
+    size_t *unconsumed_size)
 {
     if (aud_buffer == NULL || pcm_buffer == NULL || speaker_config == NULL)
     {
@@ -319,8 +173,7 @@ esp_err_t play_audio(
         aud_buffer,
         speaker_config->decoder,
         unconsumed_size,
-        &pcm_len
-    );
+        &pcm_len);
     if (decode_ret != ESP_OK)
     {
         return decode_ret;
@@ -333,10 +186,10 @@ esp_err_t play_audio(
         pcm_buffer->data,
         pcm_len,
         &bytes_written,
-        portMAX_DELAY
-    );
+        portMAX_DELAY);
 
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
     }
 
@@ -345,146 +198,222 @@ esp_err_t play_audio(
     return ESP_OK;
 }
 
-/*
+
+void stream_decode(void *pvParameters)
 {
+    ESP_LOGI(TAG_DECODER, "stream_decode running on core %d", xPortGetCoreID());
 
-    frame_t *frame = NULL;
+    stream_decode_params *params = (stream_decode_params *)pvParameters;
 
-
-    if (prev_frame == NULL)
+    if (params == NULL ||
+        params->raw_data_stream == NULL ||
+        params->pcm_queue == NULL ||
+        params->speaker_config == NULL ||
+        params->speaker_config->decoder == NULL)
     {
-        frame = get_frame(audio_buffer, NULL, sizeof(NULL), buffer_size, speaker_config->decoder);
-        if (frame == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate frame");
-            free(frame);
-            return NULL;
-        }
-        free(prev_frame);
-    }
-    else
-    {
-        frame = get_frame(audio_buffer, prev_frame->unconsumed_bytes, 
-                        prev_frame->unconsumed_bytes_size, 
-                        buffer_size, speaker_config->decoder);
-        if (frame == NULL) {
-            ESP_LOGE(TAG, "Failed to retrive frame");
-            free(prev_frame->pcm_buffer);
-            free(prev_frame->unconsumed_bytes);
-            free(prev_frame);
-            return NULL;
-        }
+        ESP_LOGE(TAG_DECODER, "Invalid decoder parameters");
+        vTaskDelete(NULL);
+        return;
     }
 
-    if (frame == NULL)
+    buffer_u8_t temp_pcm_buff = get_buffer(PCM_BUFFER_SIZE);
+    buffer_u8_t temp_raw_buff = get_buffer(AUD_BUFFER_SIZE + AUD_BUFFER_SIZE / 4);
+
+    if (temp_pcm_buff.data == NULL || temp_raw_buff.data == NULL)
     {
-        ESP_LOGE(TAG, "Failed to generate audio frame");
-        return NULL;
+        ESP_LOGE(TAG_DECODER, "Failed to allocate decoder buffers");
+
+        free(temp_pcm_buff.data);
+        free(temp_raw_buff.data);
+
+        vTaskDelete(NULL);
+        return;
     }
-    
-    size_t bytes_written = 0;
 
-    ESP_LOGI(TAG, "playing one frame");
+    const size_t redecode_threshold = AUD_BUFFER_SIZE / 4;
 
-    size_t replay_threshold = 1024;
+    size_t tot_unconsumed = 0;
+    size_t unconsumed_size = 0;
+    size_t decoded_size = 0;
 
-    // re attempt decoding if unconsumed is too large
-    while (frame->unconsumed_bytes_size > replay_threshold)
+    while (1)
     {
-        ESP_LOGI(TAG, "caling intermediate frame");
+        ESP_LOGI(TAG_DECODER, "Waiting for raw data");
 
-        frame_t *intermetent_frame = NULL;
-
-        if (frame->unconsumed_bytes != NULL)
+        // Ensure the next 4096-byte item fits.
+        if (tot_unconsumed > temp_raw_buff.size - AUD_BUFFER_SIZE)
         {
-            // use unconsumed as raw for deecoding
-            intermetent_frame = get_frame(frame->unconsumed_bytes, NULL, 0, frame->unconsumed_bytes_size, speaker_config->decoder);
-            if (intermetent_frame == NULL)
+            ESP_LOGE(TAG_DECODER, "Raw buffer capacity exceeded");
+            tot_unconsumed = 0;
+        }
+
+        // Receive the next compressed audio chunk after existing data.
+        if (xQueueReceive(
+                params->raw_data_stream,
+                temp_raw_buff.data + tot_unconsumed,
+                portMAX_DELAY) != pdPASS)
+        {
+            ESP_LOGE(TAG_DECODER, "Failed to receive raw data");
+            continue;
+        }
+
+        tot_unconsumed += AUD_BUFFER_SIZE;
+
+        ESP_LOGI(TAG_DECODER, "Received raw data: %zu bytes", tot_unconsumed);
+
+        bool first_pass = true;
+
+        // Always attempt one decode after receiving new data.
+        // Continue while enough compressed data remains.
+        while (first_pass || tot_unconsumed > redecode_threshold)
+        {
+            first_pass = false;
+
+            size_t previous_unconsumed = tot_unconsumed;
+
+            buffer_u8_t rebound_pcm_buff = {
+                .data = temp_pcm_buff.data,
+                .size = temp_pcm_buff.size
+            };
+
+            buffer_u8_t rebound_raw_buff = {
+                .data = temp_raw_buff.data,
+                .size = tot_unconsumed
+            };
+
+            unconsumed_size = 0;
+            decoded_size = 0;
+
+            esp_err_t ret = decode(
+                &rebound_pcm_buff,
+                &rebound_raw_buff,
+                params->speaker_config->decoder,
+                &unconsumed_size,
+                &decoded_size
+            );
+
+            if (ret != ESP_OK)
             {
-                ESP_LOGI(TAG, "intermentant frame failed");
-                return NULL;
+                ESP_LOGE(TAG_DECODER, "Decode failed");
+                break;
+            }
+
+            // Validate the decoder's reported output size.
+            if (decoded_size > temp_pcm_buff.size)
+            {
+                ESP_LOGE(TAG_DECODER,
+                         "Decoder output exceeds PCM buffer: %zu",
+                         decoded_size);
+                break;
+            }
+
+            // Update the amount of compressed data remaining.
+            if (unconsumed_size > previous_unconsumed)
+            {
+                ESP_LOGE(TAG_DECODER, "Invalid unconsumed size");
+                break;
+            }
+
+            tot_unconsumed = unconsumed_size;
+
+            ESP_LOGI(TAG_DECODER,
+                     "Decoded: %zu bytes, remaining raw: %zu bytes",
+                     decoded_size,
+                     tot_unconsumed);
+
+            // Only send non-empty PCM frames.
+            if (decoded_size > 0)
+            {
+                buffer_u8_t push_buff = get_buffer(decoded_size);
+
+                if (push_buff.data == NULL)
+                {
+                    ESP_LOGE(TAG_DECODER, "Failed to allocate PCM output");
+                    break;
+                }
+
+                push_buff.size = decoded_size;
+
+                memcpy(
+                    push_buff.data,
+                    temp_pcm_buff.data,
+                    decoded_size
+                );
+
+                // Queue copies the descriptor, not the PCM data.
+                // Ownership of push_buff.data transfers to the receiver.
+                if (xQueueSend(
+                        params->pcm_queue,
+                        &push_buff,
+                        portMAX_DELAY) != pdPASS)
+                {
+                    ESP_LOGE(TAG_DECODER, "Failed to queue PCM data");
+                    free(push_buff.data);
+                    break;
+                }
+            }
+
+            // Prevent an infinite loop if the decoder makes no progress.
+            if (tot_unconsumed == previous_unconsumed &&
+                decoded_size == 0)
+            {
+                ESP_LOGW(TAG_DECODER, "Decoder made no progress");
+                break;
+            }
+
+            if (tot_unconsumed == previous_unconsumed)
+            {
+                ESP_LOGW(TAG_DECODER, "Decoder did not consume input");
+                break;
             }
         }
-        else
-        {
-            ESP_LOGE(TAG, "unconsumed bytes for decoding was null");
-            break;
-        }
-
-        //combine pcm buffer and buffer sizes 
-        size_t old_pcm_size = frame->pcm_buffer_size;
-        size_t new_pcm_size = frame->pcm_buffer_size + intermetent_frame->pcm_buffer_size;
-        uint8_t *temp = realloc(frame->pcm_buffer, new_pcm_size);
-
-        if (temp == NULL)
-        {
-            ESP_LOGE(TAG, "Failed to reallocate PCM buffer");
-            ESP_LOGW(TAG, "needed %zu bytes in memory had %u with the largest block of %u bytes", 
-                new_pcm_size,
-                (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT), 
-                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-            // frame->pcm_buffer is still valid here
-            return NULL;
-        }
-
-        frame->pcm_buffer = temp;
-        frame->pcm_buffer_size = new_pcm_size;
-
-        
-        memcpy(
-            frame->pcm_buffer + old_pcm_size,
-            intermetent_frame->pcm_buffer,
-            intermetent_frame->pcm_buffer_size
-        );
-
-
-        ESP_LOGI(TAG, "pcm_buffer: %p", (void *)frame->pcm_buffer);
-        ESP_LOGI(TAG, "old PCM size: %zu", old_pcm_size);
-        ESP_LOGI(TAG, "pintermetent frame pcm buffer: %p", (void *)intermetent_frame->pcm_buffer);
-        ESP_LOGI(TAG, "intermentent frame PCM buffer size: %zu", intermetent_frame->pcm_buffer_size);
-
-        if (frame->pcm_buffer == NULL)
-        {
-            ESP_LOGE(TAG, " AFTER REALOC Intermetent frame -> PCM_BUFFER failed is null and beign skipped");
-            ESP_LOGW(TAG, "needed %zu memory and had %u with the smallest block being %lu", 
-                frame->pcm_buffer_size, 
-                (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT), 
-                (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-            free(intermetent_frame);
-            free(frame);
-            return NULL;
-        }
-
-        memcpy(frame->pcm_buffer + old_pcm_size, intermetent_frame->pcm_buffer, intermetent_frame->pcm_buffer_size);
-
-        //update frame with the new unconsumed
-        free(frame->unconsumed_bytes);
-
-        frame->unconsumed_bytes = intermetent_frame->unconsumed_bytes;
-        frame->unconsumed_bytes_size = intermetent_frame->unconsumed_bytes_size;
-
-        intermetent_frame->unconsumed_bytes = NULL;
-
-        //intermentent frame is no longer needed
-        free(intermetent_frame->pcm_buffer);
-        free(intermetent_frame->unconsumed_bytes);
-        free(intermetent_frame);
     }
 
-    esp_err_t ret = i2s_channel_write(
-        speaker_config->tx_handle,
-        frame->pcm_buffer,
-        frame->pcm_buffer_size,
-        &bytes_written,
-        portMAX_DELAY
-    );
-
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
-    }
-
-    ESP_LOGI(TAG, "Finished playing frame: %zu", bytes_written);
-
-    return frame;
-
+    free(temp_pcm_buff.data);
+    free(temp_raw_buff.data);
+    vTaskDelete(NULL);
 }
-    */
+
+void play_pcm_stream(void *pvParameters)
+{
+    play_pcm_stream_params *params = (play_pcm_stream_params *)pvParameters;
+    if (params == NULL)
+    {
+        ESP_LOGE(TAG_PLAYER, "Error getting params");
+        vTaskDelete(NULL);
+    }
+
+    buffer_u8_t temp_pcm_buffer;
+
+    size_t bytes_written = 0;
+
+    while (1)
+    {
+        ESP_LOGI(TAG_PLAYER, "Reciving from pcm buffer");
+        if (xQueueReceive(params->pcm_queue, &temp_pcm_buffer, portMAX_DELAY) == pdPASS)
+        {
+            ESP_LOGI(TAG_PLAYER, "finished reciving from pcm buffer");
+
+            if (temp_pcm_buffer.data == NULL)
+            {
+                ESP_LOGE(TAG_PLAYER, "Error getting pcm data");
+                vTaskDelete(NULL);
+            }
+
+            ESP_LOGI(TAG_PLAYER, "playing sound");
+            esp_err_t ret = i2s_channel_write(
+                params->speaker_config->tx_handle,
+                temp_pcm_buffer.data,
+                temp_pcm_buffer.size,
+                &bytes_written,
+                portMAX_DELAY);
+
+            free(temp_pcm_buffer.data);
+
+            if (ret != ESP_OK)
+            {
+                ESP_LOGE(TAG_PLAYER, "I2S write failed: %s", esp_err_to_name(ret));
+            }
+        }
+    }
+}

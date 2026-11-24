@@ -1,6 +1,7 @@
 #pragma once
 
 #include "util.h"
+#include <stdio.h>
 
 #define SD_MISO GPIO_NUM_19
 #define SD_MOSI GPIO_NUM_23
@@ -12,6 +13,10 @@
 #define MOUNT_POINT2 "/sdcard2"
 #define MAX_FILES 5
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+
 // this is where file paths are stored
 #define test_FILE_PATH "/sdcard/test.txt"
 // this is where mp3 files are stored
@@ -20,6 +25,15 @@
 
 // functions
 #include "esp_err.h"
+
+typedef struct
+{
+    QueueHandle_t raw_data_queue;
+    size_t copy_size;
+    const char *file_path;
+} stream_data_params;
+
+void stream_data(void *pvParameters);
 
 esp_err_t sd_card_init(const char *mount_point);
 void readfile(const char *file_path);
