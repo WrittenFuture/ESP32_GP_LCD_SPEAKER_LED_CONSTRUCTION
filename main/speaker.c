@@ -43,7 +43,7 @@ speaker_config_t *speaker_init(void)
 
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT,
-            I2S_SLOT_MODE_STEREO),
+            I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = SPK_I2S_BCLK,
@@ -198,7 +198,6 @@ esp_err_t play_audio(
     return ESP_OK;
 }
 
-
 void stream_decode(void *pvParameters)
 {
     ESP_LOGI(TAG_DECODER, "stream_decode running on core %d", xPortGetCoreID());
@@ -217,7 +216,7 @@ void stream_decode(void *pvParameters)
     }
 
     buffer_u8_t temp_pcm_buff = get_buffer(PCM_BUFFER_SIZE);
-    buffer_u8_t temp_raw_buff = get_buffer(AUD_BUFFER_SIZE + AUD_BUFFER_SIZE / 4);
+    buffer_u8_t temp_raw_buff = get_buffer(AUD_BUFFER_SIZE + AUD_BUFFER_SIZE);
 
     if (temp_pcm_buff.data == NULL || temp_raw_buff.data == NULL)
     {
@@ -230,7 +229,7 @@ void stream_decode(void *pvParameters)
         return;
     }
 
-    const size_t redecode_threshold = AUD_BUFFER_SIZE / 4;
+    const size_t redecode_threshold = AUD_BUFFER_SIZE / 2;
 
     size_t tot_unconsumed = 0;
     size_t unconsumed_size = 0;
@@ -238,7 +237,6 @@ void stream_decode(void *pvParameters)
 
     while (1)
     {
-        ESP_LOGI(TAG_DECODER, "Waiting for raw data");
 
         // Ensure the next 4096-byte item fits.
         if (tot_unconsumed > temp_raw_buff.size - AUD_BUFFER_SIZE)
@@ -248,6 +246,7 @@ void stream_decode(void *pvParameters)
         }
 
         // Receive the next compressed audio chunk after existing data.
+        ESP_LOGI(TAG_DECODER, "waiting for raw_data");
         if (xQueueReceive(
                 params->raw_data_stream,
                 temp_raw_buff.data + tot_unconsumed,
@@ -256,30 +255,34 @@ void stream_decode(void *pvParameters)
             ESP_LOGE(TAG_DECODER, "Failed to receive raw data");
             continue;
         }
+        ESP_LOGI(TAG_DECODER, "finished waiting for raw_data");
 
         tot_unconsumed += AUD_BUFFER_SIZE;
 
-        ESP_LOGI(TAG_DECODER, "Received raw data: %zu bytes", tot_unconsumed);
+        ESP_LOGI(TAG_DECODER, "Received raw data: %zu bytes total to decode", tot_unconsumed);
 
         bool first_pass = true;
+        int pass = 0;
 
         // Always attempt one decode after receiving new data.
         // Continue while enough compressed data remains.
         while (first_pass || tot_unconsumed > redecode_threshold)
         {
+            ESP_LOGW(TAG_DECODER, "Decoder pass: %d ", pass);
+            ESP_LOGW(TAG_DECODER, "unconsumed: %zu ", tot_unconsumed);
+            pass++;
+
             first_pass = false;
 
             size_t previous_unconsumed = tot_unconsumed;
 
             buffer_u8_t rebound_pcm_buff = {
                 .data = temp_pcm_buff.data,
-                .size = temp_pcm_buff.size
-            };
+                .size = temp_pcm_buff.size};
 
             buffer_u8_t rebound_raw_buff = {
                 .data = temp_raw_buff.data,
-                .size = tot_unconsumed
-            };
+                .size = tot_unconsumed};
 
             unconsumed_size = 0;
             decoded_size = 0;
@@ -289,8 +292,7 @@ void stream_decode(void *pvParameters)
                 &rebound_raw_buff,
                 params->speaker_config->decoder,
                 &unconsumed_size,
-                &decoded_size
-            );
+                &decoded_size);
 
             if (ret != ESP_OK)
             {
@@ -333,12 +335,12 @@ void stream_decode(void *pvParameters)
                 }
 
                 push_buff.size = decoded_size;
+                ESP_LOGI(TAG_DECODER, "buffer size: %zu", push_buff.size);
 
                 memcpy(
                     push_buff.data,
                     temp_pcm_buff.data,
-                    decoded_size
-                );
+                    decoded_size);
 
                 // Queue copies the descriptor, not the PCM data.
                 // Ownership of push_buff.data transfers to the receiver.
@@ -399,6 +401,8 @@ void play_pcm_stream(void *pvParameters)
                 ESP_LOGE(TAG_PLAYER, "Error getting pcm data");
                 vTaskDelete(NULL);
             }
+
+            ESP_LOGI(TAG_PLAYER, "Size grabbed: %zu", temp_pcm_buffer.size);
 
             ESP_LOGI(TAG_PLAYER, "playing sound");
             esp_err_t ret = i2s_channel_write(

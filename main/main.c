@@ -33,7 +33,7 @@ void playfile(const char *file_path,
         "RawDataStream",
         8192,
         &raw_data_params,
-        5,
+        3,
         raw_data_task);
 
     if (kret != 1)
@@ -59,7 +59,7 @@ void playfile(const char *file_path,
         "DecodeDataStream",
         4096,
         &decode_params,
-        5,
+        4,
         data_decode_task
 
     );
@@ -121,7 +121,7 @@ void app_main(void)
     TaskHandle_t data_decode_task = NULL;
     // TaskHandle_t *play_task;
 
-    playfile(MP3_FILE_PATH "59. Minuet of Forest.mp3",
+    playfile(MP3_FILE_PATH "72. Kotake & Koume's Theme.mp3",
              speaker_config,
              &raw_data_task,
              &data_decode_task);

@@ -119,7 +119,7 @@ FILE *readfile_open(const char *file_path)
     return file;
 }
 
-// TODO: add checks
+// TODO: add safety checks
 esp_err_t copy_data(buffer_u8_t *buffer, size_t buffer_offset, size_t file_start, size_t byte_count, const char *file_path)
 {
     if (buffer->data == NULL)
@@ -252,7 +252,7 @@ void stream_data(void *pvParameters)
         }
 
         ESP_LOGI(TAG, "Sending data to decoder");
-        if (xQueueSend(params->raw_data_queue, &temp_sd_data, portMAX_DELAY) == pdPASS)
+        if (xQueueSend(params->raw_data_queue, temp_sd_data.data, portMAX_DELAY) == pdPASS)
         {
             pushed = true;
             counter++;
