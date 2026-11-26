@@ -5,10 +5,13 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_lcd_io_i80.h"
+#include "esp_lcd_panel_io.h"
 
 #include "sd_card.h"
 #include "speaker.h"
 #include "util.h"
+#include "display.h"
 
 static const char *TAG = "MAIN";
 
@@ -91,6 +94,11 @@ void playfile(
     }
 }
 
+void show_image(buffer_u8_t display_buffer)
+{
+    display_flush(0x005f, display_buffer);
+}
+
 void app_main(void)
 {
 
@@ -110,7 +118,7 @@ void app_main(void)
     TaskHandle_t data_decode_task = NULL;
     TaskHandle_t play_task = NULL;
 
-    int music_count = (esp_random() % 86) + 1;
+    int music_count = (esp_random() % NUM_MUSIC_FILES) + 1;
     char file_path[64];
 
     snprintf(
@@ -159,6 +167,16 @@ void app_main(void)
 
     UBaseType_t queued = uxQueueMessagesWaiting(pcm_queue);
 
+    buffer_u8_t display_buffer = display_init();
+    if (display_buffer.data == NULL)
+    {
+        ESP_LOGE(TAG, "display failed to init");
+    }
+    else
+    {
+        show_image(display_buffer);
+    }
+
     // this shouold stop if bot EOF is true and pcm buffer is empty
     while (!eof || queued != 0)
     {
@@ -179,5 +197,6 @@ void app_main(void)
     {
         vTaskDelete(play_task);
     }
+    display_off();
     return;
 }

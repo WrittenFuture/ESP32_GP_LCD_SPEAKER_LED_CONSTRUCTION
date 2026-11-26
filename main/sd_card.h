@@ -12,7 +12,7 @@
 #define MOUNT_POINT1 "/sdcard"
 #define MOUNT_POINT2 "/sdcard2"
 #define MAX_FILES 5
-#define NUM_MUSIC_FILES 86
+#define NUM_MUSIC_FILES 57
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
