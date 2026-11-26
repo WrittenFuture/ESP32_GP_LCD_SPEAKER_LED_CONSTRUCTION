@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_random.h"
 
 #include "sd_card.h"
 #include "speaker.h"
@@ -11,28 +12,24 @@
 
 static const char *TAG = "MAIN";
 
-void playfile(const char *file_path,
-              speaker_config_t *speaker_config,
-              TaskHandle_t *raw_data_task,
-              TaskHandle_t *data_decode_task)
+void playfile(
+    speaker_config_t *speaker_config,
+    TaskHandle_t *raw_data_task,
+    TaskHandle_t *data_decode_task,
+    TaskHandle_t *play_task,
+    stream_data_params *raw_data_params,
+    stream_decode_params *decode_params,
+    play_pcm_stream_params *player_params,
+    int *queue_size)
 {
-    QueueHandle_t pcm_queue = xQueueCreate(4, sizeof(buffer_u8_t));
-    QueueHandle_t raw_data_queue = xQueueCreate(4, AUD_BUFFER_SIZE);
-
-    ESP_LOGI(TAG, "raw_data_queue: %p", (void *)raw_data_queue);
 
     // create the raw data stream
-    stream_data_params raw_data_params = {
-        .raw_data_queue = raw_data_queue,
-        .copy_size = AUD_BUFFER_SIZE,
-        .file_path = file_path};
-
     ESP_LOGI(TAG, "attempting to start raw_data_stream");
     int kret = xTaskCreate(
         stream_data,
         "RawDataStream",
         8192,
-        &raw_data_params,
+        raw_data_params,
         3,
         raw_data_task);
 
@@ -48,18 +45,12 @@ void playfile(const char *file_path,
 
     // create the decoder task
     ESP_LOGI(TAG, "attempting to start data_decode_stream");
-    stream_decode_params decode_params =
-        {
-            .pcm_queue = pcm_queue,
-            .raw_data_stream = raw_data_queue,
-            .speaker_config = speaker_config};
-
     kret = xTaskCreate(
         stream_decode,
         "DecodeDataStream",
         4096,
-        &decode_params,
-        4,
+        decode_params,
+        6,
         data_decode_task
 
     );
@@ -73,20 +64,22 @@ void playfile(const char *file_path,
         ESP_LOGI(TAG, "sucsessfully started data_decode_stream");
     }
 
+    UBaseType_t queued = uxQueueMessagesWaiting(player_params->pcm_queue);
+    while (queued != *queue_size)
+    {
+        ESP_LOGI(TAG, "waiting for queue to fill: %d", queued);
+        vTaskDelay(25);
+        queued = uxQueueMessagesWaiting(player_params->pcm_queue);
+    }
     // start player task
-    play_pcm_stream_params player_params =
-        {
-            .pcm_queue = pcm_queue,
-            .speaker_config = speaker_config};
-
     ESP_LOGI(TAG, "attempting to start player task");
     kret = xTaskCreate(
         play_pcm_stream,
         "PCMplayer",
         8192,
-        &player_params,
-        5,
-        NULL);
+        player_params,
+        4,
+        play_task);
     if (kret != 1)
     {
         ESP_LOGE(TAG, "an error occured while starting async task play_pcm_stream. return: %d", kret);
@@ -95,11 +88,6 @@ void playfile(const char *file_path,
     else
     {
         ESP_LOGI(TAG, "sucsessfully started play_pcm_stream");
-    }
-
-    while (1)
-    {
-        vTaskDelay(1000);
     }
 }
 
@@ -117,82 +105,79 @@ void app_main(void)
 
     sd_card_init(MOUNT_POINT1);
 
+    // handles to audio tasks
     TaskHandle_t raw_data_task = NULL;
     TaskHandle_t data_decode_task = NULL;
-    // TaskHandle_t *play_task;
+    TaskHandle_t play_task = NULL;
 
-    playfile(MP3_FILE_PATH "72. Kotake & Koume's Theme.mp3",
-             speaker_config,
-             &raw_data_task,
-             &data_decode_task);
-}
-/*
-void app_main(void)
-{
+    int music_count = (esp_random() % 86) + 1;
+    char file_path[64];
 
-    // initialize the SD card
-    esp_err_t ret = sd_card_init(MOUNT_POINT1);
-    if (ret != ESP_OK)
+    snprintf(
+        file_path, sizeof(file_path),
+        MP3_FILE_PATH "%d.mp3", music_count);
+
+    int queue_size = 32;
+    // create the task struct
+    QueueHandle_t pcm_queue = xQueueCreate(32, sizeof(buffer_u8_t));
+    QueueHandle_t raw_data_queue = xQueueCreate(4, AUD_BUFFER_SIZE);
+
+    if (pcm_queue == NULL || raw_data_queue == NULL)
     {
-        ESP_LOGE(TAG, "Failed to initialize SD card: %s", esp_err_to_name(ret));
-        return;
-    }
-    ESP_LOGI(TAG, "SD card initialized successfully");
-
-    // initialize the speaker
-    speaker_config_t *speaker_config = speaker_init();
-    if (speaker_config == NULL)
-    {
-        ESP_LOGE(TAG, "Failed to initialize speaker");
+        ESP_LOGE(TAG, "Failed to create audio queues");
         return;
     }
 
-    // get an audio buffer
-    buffer_u8_t aud_buffer = get_buffer(AUD_BUFFER_SIZE);
-    if (aud_buffer.data == NULL)
-    {
-        ESP_LOGE(TAG, "Failed to allocate audio buffer");
-        return;
-    }
+    bool eof = false;
 
-    // get a pcm buffer
-    buffer_u8_t pcm_buffer = get_buffer(PCM_BUFFER_SIZE);
-    if (pcm_buffer.data == NULL)
-    {
-        ESP_LOGE(TAG, "Failed to allocate PCM buffer");
-        free(aud_buffer.data);
-        return;
-    }
+    stream_data_params raw_data_params = {
+        .raw_data_queue = raw_data_queue,
+        .copy_size = AUD_BUFFER_SIZE,
+        .file_path = file_path,
+        .eof = &eof};
 
-    size_t unconsumed_size = 0;
-    size_t total_read = 0;
-    int counter = 0;
-
-    while (1)
-    {
-        // fill the buffer with raw data
-        ret = copy_data(&aud_buffer, unconsumed_size, total_read, AUD_BUFFER_SIZE - unconsumed_size, MP3_FILE_PATH "59. Minuet of Forest.mp3");
-        if (ret != ESP_OK)
+    stream_decode_params decode_params =
         {
-            ESP_LOGE(TAG, "Failed to copy data");
-            continue;
-        }
-        total_read += AUD_BUFFER_SIZE - unconsumed_size;
+            .pcm_queue = pcm_queue,
+            .raw_data_stream = raw_data_queue,
+            .speaker_config = speaker_config};
 
-        ret = play_audio(&aud_buffer, &pcm_buffer, speaker_config, &unconsumed_size);
-        if (ret != ESP_OK)
+    play_pcm_stream_params player_params =
         {
-            ESP_LOGE(TAG, "Failed to play audio");
-            continue;
-        }
+            .pcm_queue = pcm_queue,
+            .speaker_config = speaker_config};
 
-        counter++;
+    playfile(
+        speaker_config,
+        &raw_data_task,
+        &data_decode_task,
+        &play_task,
+        &raw_data_params,
+        &decode_params,
+        &player_params,
+        &queue_size);
 
-        printf("\n");
-        ESP_LOGI(TAG, "buffer read #%d", counter);
+    UBaseType_t queued = uxQueueMessagesWaiting(pcm_queue);
+
+    // this shouold stop if bot EOF is true and pcm buffer is empty
+    while (!eof || queued != 0)
+    {
+        ESP_LOGI(TAG, "queue has %d/%d items filled", queued, queue_size);
+        vTaskDelay(25);
+        queued = uxQueueMessagesWaiting(pcm_queue);
     }
 
-    free(aud_buffer.data);
-    free(pcm_buffer.data);
+    disable_i2s(speaker_config->tx_handle);
+    ESP_LOGI(TAG, "deleting decoder task");
+    if (eTaskGetState(data_decode_task) != eDeleted)
+    {
+        vTaskDelete(data_decode_task);
+    }
+
+    ESP_LOGI(TAG, "deleting play");
+    if (eTaskGetState(play_task) != eDeleted)
+    {
+        vTaskDelete(play_task);
+    }
+    return;
 }
-*/

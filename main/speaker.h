@@ -47,3 +47,6 @@ void play_pcm_stream(void *pvParameters);
 void stream_decode(void *pvParameters);
 
 speaker_config_t *speaker_init(void);
+
+void disable_i2s(i2s_chan_handle_t tx_handle);
+void enable_i2s(i2s_chan_handle_t tx_handle);

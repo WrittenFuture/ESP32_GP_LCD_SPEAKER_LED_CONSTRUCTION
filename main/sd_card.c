@@ -120,7 +120,7 @@ FILE *readfile_open(const char *file_path)
 }
 
 // TODO: add safety checks
-esp_err_t copy_data(buffer_u8_t *buffer, size_t buffer_offset, size_t file_start, size_t byte_count, const char *file_path)
+esp_err_t copy_data(buffer_u8_t *buffer, size_t buffer_offset, size_t file_start, size_t byte_count, const char *file_path, bool *eof)
 {
     if (buffer->data == NULL)
     {
@@ -153,6 +153,11 @@ esp_err_t copy_data(buffer_u8_t *buffer, size_t buffer_offset, size_t file_start
 
     // copy bytes into buffer from file_start
     fread(buffer->data + buffer_offset, 1, byte_count, file);
+
+    if (feof(file))
+    {
+        *eof = true;
+    }
 
     fclose(file);
 
@@ -235,7 +240,8 @@ void stream_data(void *pvParameters)
                 0,
                 counter * params->copy_size,
                 params->copy_size,
-                params->file_path);
+                params->file_path,
+                &end_of_file);
 
             if (ret != ESP_OK)
             {
@@ -267,6 +273,8 @@ void stream_data(void *pvParameters)
         // TODO: flip true when EOF is reached
         if (end_of_file)
         {
+            ESP_LOGW(TAG, "End of file reached");
+            *params->eof = true;
             break;
         }
     }

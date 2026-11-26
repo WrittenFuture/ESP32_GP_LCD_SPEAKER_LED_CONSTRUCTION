@@ -16,6 +16,7 @@
 #include "esp_audio_simple_dec_default.h"
 
 #include "audio_decoder.h"
+#include "esp_timer.h"
 
 static const char *TAG = "SPEAKER";
 static const char *TAG_DECODER = "SPEAKER_DECODER";
@@ -43,7 +44,7 @@ speaker_config_t *speaker_init(void)
 
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT,
-            I2S_SLOT_MODE_MONO),
+            I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = SPK_I2S_BCLK,
@@ -87,6 +88,15 @@ speaker_config_t *speaker_init(void)
     config->decoder = decoder;
 
     return config;
+}
+
+void disable_i2s(i2s_chan_handle_t tx_handle)
+{
+    i2s_channel_disable(tx_handle);
+}
+void enable_i2s(i2s_chan_handle_t tx_handle)
+{
+    i2s_channel_enable(tx_handle);
 }
 
 esp_err_t decode(buffer_u8_t *pcm_buffer,
@@ -162,7 +172,7 @@ esp_err_t play_audio(
 {
     if (aud_buffer == NULL || pcm_buffer == NULL || speaker_config == NULL)
     {
-        ESP_LOGE(TAG, "buffers for audio playbacl decoding are null");
+        ESP_LOGE(TAG, "buffers for audio playback decoding are null");
         return ESP_FAIL;
     }
 
@@ -200,6 +210,173 @@ esp_err_t play_audio(
 
 void stream_decode(void *pvParameters)
 {
+
+    ESP_LOGI(TAG_DECODER, "stream_decode running on core %d", xPortGetCoreID());
+
+    stream_decode_params *params = (stream_decode_params *)pvParameters;
+
+    if (params == NULL ||
+        params->raw_data_stream == NULL ||
+        params->pcm_queue == NULL ||
+        params->speaker_config == NULL ||
+        params->speaker_config->decoder == NULL)
+    {
+        ESP_LOGE(TAG_DECODER, "Invalid decoder parameters");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    buffer_u8_t temp_pcm_buff = get_buffer(PCM_BUFFER_SIZE);
+    buffer_u8_t temp_raw_buff = get_buffer(AUD_BUFFER_SIZE + AUD_BUFFER_SIZE);
+
+    if (temp_pcm_buff.data == NULL || temp_raw_buff.data == NULL)
+    {
+        ESP_LOGE(TAG_DECODER, "Failed to allocate decoder buffers");
+
+        free(temp_pcm_buff.data);
+        free(temp_raw_buff.data);
+
+        vTaskDelete(NULL);
+        return;
+    }
+
+    const size_t redecode_threshold = AUD_BUFFER_SIZE / 2;
+
+    size_t tot_unconsumed = 0;
+    size_t unconsumed_size = 0;
+    size_t decoded_size = 0;
+
+    while (1)
+    {
+
+        // Ensure the next 4096-byte item fits.
+        if (tot_unconsumed > temp_raw_buff.size - AUD_BUFFER_SIZE)
+        {
+            ESP_LOGE(TAG_DECODER, "Raw buffer capacity exceeded");
+            tot_unconsumed = 0;
+        }
+
+        // Receive the next compressed audio chunk after existing data.
+        ESP_LOGI(TAG_DECODER, "waiting for raw_data");
+        if (xQueueReceive(
+                params->raw_data_stream,
+                temp_raw_buff.data + tot_unconsumed,
+                portMAX_DELAY) != pdPASS)
+        {
+            ESP_LOGE(TAG_DECODER, "Failed to receive raw data");
+            continue;
+        }
+
+        tot_unconsumed += AUD_BUFFER_SIZE;
+
+        bool first_pass = true;
+
+        // Always attempt one decode after receiving new data.
+        // Continue while enough compressed data remains.
+        while (first_pass || tot_unconsumed > redecode_threshold)
+        {
+
+            first_pass = false;
+
+            size_t previous_unconsumed = tot_unconsumed;
+
+            buffer_u8_t rebound_pcm_buff = {
+                .data = temp_pcm_buff.data,
+                .size = temp_pcm_buff.size};
+
+            buffer_u8_t rebound_raw_buff = {
+                .data = temp_raw_buff.data,
+                .size = tot_unconsumed};
+
+            unconsumed_size = 0;
+            decoded_size = 0;
+
+            esp_err_t ret = decode(
+                &rebound_pcm_buff,
+                &rebound_raw_buff,
+                params->speaker_config->decoder,
+                &unconsumed_size,
+                &decoded_size);
+
+            if (ret != ESP_OK)
+            {
+                ESP_LOGE(TAG_DECODER, "Decode failed");
+                break;
+            }
+
+            // Validate the decoder's reported output size.
+            if (decoded_size > temp_pcm_buff.size)
+            {
+                ESP_LOGE(TAG_DECODER,
+                         "Decoder output exceeds PCM buffer: %zu",
+                         decoded_size);
+                break;
+            }
+
+            // Update the amount of compressed data remaining.
+            if (unconsumed_size > previous_unconsumed)
+            {
+                ESP_LOGE(TAG_DECODER, "Invalid unconsumed size");
+                break;
+            }
+
+            tot_unconsumed = unconsumed_size;
+
+            // Only send non-empty PCM frames.
+            if (decoded_size > 0)
+            {
+                buffer_u8_t push_buff = get_buffer(decoded_size);
+
+                if (push_buff.data == NULL)
+                {
+                    ESP_LOGE(TAG_DECODER, "Failed to allocate PCM output");
+                    break;
+                }
+
+                push_buff.size = decoded_size;
+
+                memcpy(
+                    push_buff.data,
+                    temp_pcm_buff.data,
+                    decoded_size);
+
+                // Queue copies the descriptor, not the PCM data.
+                // Ownership of push_buff.data transfers to the receiver.
+                if (xQueueSend(
+                        params->pcm_queue,
+                        &push_buff,
+                        portMAX_DELAY) != pdPASS)
+                {
+                    ESP_LOGE(TAG_DECODER, "Failed to queue PCM data");
+                    free(push_buff.data);
+                    break;
+                }
+            }
+
+            // Prevent an infinite loop if the decoder makes no progress.
+            if (tot_unconsumed == previous_unconsumed &&
+                decoded_size == 0)
+            {
+                ESP_LOGW(TAG_DECODER, "Decoder made no progress");
+                break;
+            }
+
+            if (tot_unconsumed == previous_unconsumed)
+            {
+                ESP_LOGW(TAG_DECODER, "Decoder did not consume input");
+                break;
+            }
+        }
+    }
+
+    free(temp_pcm_buff.data);
+    free(temp_raw_buff.data);
+    vTaskDelete(NULL);
+}
+
+void stream_decode_old(void *pvParameters)
+{
+
     ESP_LOGI(TAG_DECODER, "stream_decode running on core %d", xPortGetCoreID());
 
     stream_decode_params *params = (stream_decode_params *)pvParameters;
@@ -268,8 +445,8 @@ void stream_decode(void *pvParameters)
         // Continue while enough compressed data remains.
         while (first_pass || tot_unconsumed > redecode_threshold)
         {
-            ESP_LOGW(TAG_DECODER, "Decoder pass: %d ", pass);
-            ESP_LOGW(TAG_DECODER, "unconsumed: %zu ", tot_unconsumed);
+            ESP_LOGI(TAG_DECODER, "Decoder pass: %d ", pass);
+            ESP_LOGI(TAG_DECODER, "unconsumed: %zu ", tot_unconsumed);
             pass++;
 
             first_pass = false;
@@ -376,7 +553,35 @@ void stream_decode(void *pvParameters)
     vTaskDelete(NULL);
 }
 
+
 void play_pcm_stream(void *pvParameters)
+{
+    play_pcm_stream_params *params = (play_pcm_stream_params *)pvParameters;
+    if (params == NULL)
+    {
+        vTaskDelete(NULL);
+    }
+
+    buffer_u8_t temp_pcm_buffer;
+
+    size_t bytes_written = 0;
+
+    while (1)
+    {
+        if (xQueueReceive(params->pcm_queue, &temp_pcm_buffer, portMAX_DELAY) == pdPASS)
+        {
+            esp_err_t ret = i2s_channel_write(
+                params->speaker_config->tx_handle,
+                temp_pcm_buffer.data,
+                temp_pcm_buffer.size,
+                &bytes_written,
+                portMAX_DELAY);
+            free(temp_pcm_buffer.data);
+        }
+    }
+}
+
+void play_pcm_stream_old(void *pvParameters)
 {
     play_pcm_stream_params *params = (play_pcm_stream_params *)pvParameters;
     if (params == NULL)
@@ -392,8 +597,24 @@ void play_pcm_stream(void *pvParameters)
     while (1)
     {
         ESP_LOGI(TAG_PLAYER, "Reciving from pcm buffer");
+        int64_t wait_start = esp_timer_get_time();
         if (xQueueReceive(params->pcm_queue, &temp_pcm_buffer, portMAX_DELAY) == pdPASS)
         {
+            int64_t wait_time = esp_timer_get_time() - wait_start;
+
+            if (wait_time > 1000)
+            {
+                ESP_LOGW(TAG_PLAYER,
+                         "PCM queue starvation: waited %lld ms",
+                         wait_time / 1000);
+            }
+            else
+            {
+                ESP_LOGI(TAG_PLAYER,
+                         "PCM queue: waited %lld ms",
+                         wait_time / 1000);
+            }
+
             ESP_LOGI(TAG_PLAYER, "finished reciving from pcm buffer");
 
             if (temp_pcm_buffer.data == NULL)
@@ -405,12 +626,27 @@ void play_pcm_stream(void *pvParameters)
             ESP_LOGI(TAG_PLAYER, "Size grabbed: %zu", temp_pcm_buffer.size);
 
             ESP_LOGI(TAG_PLAYER, "playing sound");
+            wait_start = esp_timer_get_time();
             esp_err_t ret = i2s_channel_write(
                 params->speaker_config->tx_handle,
                 temp_pcm_buffer.data,
                 temp_pcm_buffer.size,
                 &bytes_written,
                 portMAX_DELAY);
+            wait_time = esp_timer_get_time() - wait_start;
+
+            if (wait_time > 1000)
+            {
+                ESP_LOGW(TAG_PLAYER,
+                         "to write to i2s: waited %lld ms",
+                         wait_time / 1000);
+            }
+            else
+            {
+                ESP_LOGI(TAG_PLAYER,
+                         "to write to i2s: waited %lld ms",
+                         wait_time / 1000);
+            }
 
             free(temp_pcm_buffer.data);
 
